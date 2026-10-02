@@ -1,0 +1,6 @@
+func foo
+set x 10
+
+func main
+set y 20
+func_end
