@@ -7,7 +7,7 @@
 //   3. Pass 0X2   -- execute resolve.bin: tokenize ONE line at a time, update the call stack, take a snapshot -> Timeline
 //   4. Pass 0X3   -- serialize Timeline -> session.tdbg(header + snapshot records + dense index)
 
-
+#define _CRT_SECURE_NO_WARNINGS
 #include <iostream>
 #include <string>
 #include <cstdint>
@@ -208,31 +208,132 @@ bool validateProgram(const char* sourcePath)
     // for each func defined there should be exactly one func_end and no nested funcs allowed - 
 }
 
-// PASS 0x1: RESOLVE() -> resolve.bin
-//int64_t writeResolveRecord(FILE* f, int64_t offsetField, const string& text)
-//{
-//    // writes one [offset(8B)][size(4B)][string] record at the current file position
-//    // returns this record's own starting byte position
-//}
-//int64_t readResolveRecord(FILE* f, string& outText)
-//{
-//    // reads one record at the current position and advances past it, returns the offset field - the raw line text comes back untouched in outText.
-//}
-//int64_t resolveProgram(const char* sourcePath, const char* resolveBinPath)
-//{
-//    FuncEntry funcArray[MAX_FUNCS];
-//    int32_t funcCount = 0;
-//    PendingPatch patches[MAX_PATCHES];
-//    int32_t patchCount = 0;
-//    // Every source line becomes one record holding the raw line, as-is.
-//    // resolve() only PEEKS at the leading word(s) -- enough to spot FUNC
-//    // (remember its position) and CALL (remember which function it needs
-//    // and where its offset field sits).
-//    // Once the whole file is written, every CALL's offset field is patched
-//    // with its target's position. Patching happens after the full write
-//    // Returns the byte offset of main's FUNC header record.
-//    // if there is no main return the error 
-//}
+ //PASS 0x1: RESOLVE() -> resolve.bin
+int64_t writeResolveRecord(FILE* f, int64_t offsetField, const string& text)
+{
+    int64_t starting_pos = ftell(f);
+
+    int32_t string_size = text.size();
+
+    fwrite(&offsetField, sizeof(int64_t), 1, f);
+
+    fwrite(&string_size, sizeof(int32_t), 1, f);
+
+    for (int i = 0; i < string_size; i++) {
+
+        fwrite(&text[i], sizeof(char), 1, f);
+    }
+
+    // writes one [offset(8B)][size(4B)][string] record at the current file position
+    // returns this record's own starting byte position
+    return starting_pos;
+}
+
+int64_t readResolveRecord(FILE* f, string& outText)
+{
+
+    int64_t offset;
+
+    int32_t string_size;
+
+    fread(&offset, sizeof(int64_t), 1, f);
+    fread(&string_size, sizeof(int32_t), 1, f);
+    outText.resize(string_size);
+
+    for (int i = 0; i < string_size; i++) {
+
+        fread(&outText[i], sizeof(char), 1, f);
+    }
+    return offset;
+
+    // reads one record at the current position and advances past it, returns the offset field - the raw line text comes back untouched in outText.
+}
+
+
+int64_t resolveProgram(const char* sourcePath, const char* resolveBinPath)
+{
+    FuncEntry funcArray[MAX_FUNCS];
+    int32_t funcCount = 0;
+    PendingPatch patches[MAX_PATCHES];
+    int32_t patchCount = 0;
+
+    ifstream rdr(sourcePath);
+    FILE* write = fopen(resolveBinPath, "wb");
+
+    if (!rdr || !write) {
+       
+        return -1;
+    }
+
+    int64_t main_offset = -1;
+
+    int64_t current_offset = 0;
+    string line;
+    while (readSourceLine(rdr,line)) {
+        int32_t string_size = line.size();
+        writeResolveRecord(write, current_offset, line);
+
+        if (firstWord(line) == "func") {
+
+            if (secondWord(line) == "main") {
+                main_offset = current_offset;
+            }
+            funcArray[funcCount].funcName = secondWord(line);
+            funcArray[funcCount].byteOffsetInResolveBin = current_offset; 
+                funcCount++;
+        }
+        if (firstWord(line) == "call") {
+            patches[patchCount].byteOffsetOfOffsetField = current_offset;
+            patches[patchCount].targetFuncName = secondWord(line);;
+            patchCount++;
+        }
+
+        current_offset = current_offset + 8 + 4 + string_size;
+
+    }
+
+    if (main_offset == -1) {
+        cout << "ERROR 404 : Main Not Found!" << endl;
+        fclose(write);
+        return -1;
+    }
+
+    
+
+    for (int i = 0; i < patchCount; i++) {
+        bool check = false;
+        int64_t temp_offset = -1;
+        for (int j = 0; j < funcCount; j++) {
+
+            if (funcArray[j].funcName == patches[i].targetFuncName) {
+                check = true;
+                temp_offset = funcArray[j].byteOffsetInResolveBin;
+                break;
+            }
+        }
+        if (!check) {
+
+            cout << "Undefined Error!" << endl;
+            fclose(write);
+            return -1;
+        }
+
+        fseek(write, patches[i].byteOffsetOfOffsetField, SEEK_SET);
+        fwrite(&temp_offset, sizeof(int64_t), 1, write);
+
+    }
+
+    fclose(write);
+    return main_offset;
+    // Every source line becomes one record holding the raw line, as-is.
+    // resolve() only PEEKS at the leading word(s) -- enough to spot FUNC
+    // (remember its position) and CALL (remember which function it needs
+    // and where its offset field sits).
+    // Once the whole file is written, every CALL's offset field is patched
+    // with its target's position. Patching happens after the full write
+    // Returns the byte offset of main's FUNC header record.
+    // if there is no main return the error 
+}
 
 // PASS 0x2: EXECUTION (tokenization happens here)
 enum TokenType
@@ -241,6 +342,7 @@ enum TokenType
     IDENTIFIER,
     PARAM
 };
+
 struct Token
 {
     TokenType type;
@@ -287,9 +389,10 @@ int32_t main()
         return 1;
     }
     cout << "Done";
-    /*
+   
     int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
-
+    cout << "done2" << endl;
+    /*
     Timeline timeline;
     executeProgram("resolve.bin", mainOffset, timeline);
 
