@@ -47,28 +47,61 @@ public:
     // Implement these functions:
     Stack()
     { // initialize the stack
+        top = nullptr;
+     
+        count = 0;
+
+
     }
     void push(const T& val)
     {
+        if (count < MAX_STACK_DEPTH){
 
+            Node* t = new Node;
+        t->data = val;
+        t->next = top;
+        top = t;
+        count++;
+        }
         // pushes the value on the stack if max limit is not reached yet.
     }
     T pop()
     {
+        if (count > 0) {
+            Node* t=top;
+            
+            top = top->next;
+            T st = t->data;
+            delete t;
+            count--;
+            return st;
+
+        }
+        return T();
         // pop the top value on the stack
     }
     T& peek()
     {
+        return top->data;
         // returns the top value on the stack
     }
     bool isEmpty()
     {
+        return count == 0;
     }
     int32_t depth()
     {
+        return count;
     }
     int32_t snapshot_into(T out[], int32_t maxLen)
     {
+        Node * temp = top;
+        int index = 0;
+        while (temp!= nullptr && index < maxLen) {
+            out[index++] = temp->data;
+            temp = temp->next;
+        }
+        return index;
         // copies every frame, top to bottom in the array given as a parameter
         // this is what buildSnapshot() call, returns count written
     }
@@ -348,19 +381,232 @@ struct Token
     TokenType type;
     string text;
 };
-//int32_t tokenizeLine(const string& line, Token tokens[], int32_t maxTokens)
-//{
-//    // first word is always a instruction keyword
-//    // instruction set = [func, func_end, call, set, add, sub, mul and div]
-//    // next word is identifier like name of a function, variable name
-//    // after identifier all are the params/arg, space separated
-//}
-//Snapshot* buildSnapshot(Stack<Frame>& callStack)
-//{
-//    // build the snapshot based on the callStack given
-//}
+
+int32_t tokenizeLine(const string& line, Token tokens[], int32_t maxTokens)
+{
+    string word;
+    stringstream ss(line);
+    int32_t size = 0;
+    while (ss >> word) {
+        if (size >= maxTokens) {
+            break;
+        }
+
+        tokens[size].text = word;
+
+        if (size == 0) {
+            tokens[size].type = KEYWORD;
+        }
+        if (size == 1) {
+
+            tokens[size].type = IDENTIFIER;
+        }
+        else {
+            tokens[size].type = PARAM;
+        }
+        size++;
+    }
+    return size;
+    // first word is always a instruction keyword
+    // instruction set = [func, func_end, call, set, add, sub, mul and div]
+    // next word is identifier like name of a function, variable name
+    // after identifier all are the params/arg, space separated
+}
+
+
+Snapshot* buildSnapshot(Stack<Frame>& callStack)
+{
+    Snapshot* ns = new Snapshot;
+
+    ns->stackDepth = callStack.snapshot_into(ns->callStack, MAX_STACK_DEPTH);
+
+    return ns;
+
+    // build the snapshot based on the callStack given
+}
+
 void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& timeline)
 {
+
+    FILE* f = fopen(resolveBinPath, "rb");
+    Stack<Frame> callstack;
+    int64_t offset = mainOffset;
+    Frame main;
+
+    main.argc = 0;
+    main.func_name = "main";
+    main.localCount =0;
+    main.returnLine = -1;
+
+    callstack.push(main);
+
+    while (true) {
+
+        fseek(f, offset, SEEK_SET);
+
+        string line;
+
+        readResolveRecord(f, line);
+
+        Token Tokens[MAX_TOKENS];
+
+        int64_t size = tokenizeLine(line, Tokens, MAX_TOKENS);
+
+        if (size == 0) {
+
+            break;
+        }
+        string keyword = Tokens[0].text;
+        if (keyword == "set") {
+
+            Frame topframe = callstack.pop();
+
+            string variable_name = Tokens[1].text;
+            int64_t variable_value= stoi(Tokens[2].text);
+
+            bool ispresent = false;
+
+            for (int i = 0; i < topframe.localCount; i++) {
+
+                if (topframe.locals[i].name == variable_name) {
+
+                    topframe.locals[i].value = variable_value;
+                    ispresent = true;
+                    break;
+                }
+
+            }
+            if (ispresent == false) {
+
+                if (topframe.localCount < MAX_VARS_PER_FRAME) {
+                    topframe.locals[topframe.localCount].name = variable_name;
+                    topframe.locals[topframe.localCount].value = variable_value;
+                    topframe.localCount++;
+                }
+              
+            }
+            callstack.push(topframe);
+        }
+
+        if (keyword == "add") {
+            Frame topframe = callstack.pop();
+
+            string variable_name1 = Tokens[1].text;
+            string variable_name2 = Tokens[2].text;
+            int64_t val2 = 0;
+            for (int i = 0; i < topframe.localCount; i++) {
+
+                if (topframe.locals[i].name == variable_name2) {
+
+                    val2 = topframe.locals[i].value;
+                    break;
+                }
+
+            }
+
+            for (int i = 0; i < topframe.localCount; i++) {
+
+                if (topframe.locals[i].name == variable_name1) {
+
+                    topframe.locals[i].value = topframe.locals[i].value + val2;
+                    break;
+                }
+
+            }
+
+            callstack.push(topframe);
+        }
+
+        if (keyword == "sub") {
+            Frame topframe = callstack.pop();
+
+            string variable_name1 = Tokens[1].text;
+            string variable_name2 = Tokens[2].text;
+            int64_t val2 = 0;
+            for (int i = 0; i < topframe.localCount; i++) {
+
+                if (topframe.locals[i].name == variable_name2) {
+
+                    val2 = topframe.locals[i].value;
+                    break;
+                }
+
+            }
+
+            for (int i = 0; i < topframe.localCount; i++) {
+
+                if (topframe.locals[i].name == variable_name1) {
+
+                    topframe.locals[i].value = topframe.locals[i].value - val2;
+                    break;
+                }
+
+            }
+
+            callstack.push(topframe);
+        }
+
+        if (keyword == "div") {
+            Frame topframe = callstack.pop();
+
+            string variable_name1 = Tokens[1].text;
+            string variable_name2 = Tokens[2].text;
+            int64_t val2 = 0;
+            for (int i = 0; i < topframe.localCount; i++) {
+
+                if (topframe.locals[i].name == variable_name2) {
+
+                    val2 = topframe.locals[i].value;
+                    break;
+                }
+
+            }
+
+            for (int i = 0; i < topframe.localCount; i++) {
+
+                if (topframe.locals[i].name == variable_name1) {
+
+                    topframe.locals[i].value = topframe.locals[i].value / val2;
+                    break;
+                }
+
+            }
+
+            callstack.push(topframe);
+        }
+
+        if (keyword == "mul") {
+            Frame topframe = callstack.pop();
+
+            string variable_name1 = Tokens[1].text;
+            string variable_name2 = Tokens[2].text;
+            int64_t val2 = 0;
+            for (int i = 0; i < topframe.localCount; i++) {
+
+                if (topframe.locals[i].name == variable_name2) {
+
+                    val2 = topframe.locals[i].value;
+                    break;
+                }
+
+            }
+
+            for (int i = 0; i < topframe.localCount; i++) {
+
+                if (topframe.locals[i].name == variable_name1) {
+
+                    topframe.locals[i].value = topframe.locals[i].value * val2;
+                    break;
+                }
+
+            }
+
+            callstack.push(topframe);
+        }
+
+
+    }
+
     // initialize the call stack
     // make the main frame
     // push main frame on the call stack
