@@ -8,14 +8,15 @@
 //   4. Pass 0X3   -- serialize Timeline -> session.tdbg(header + snapshot records + dense index)
 
 #define _CRT_SECURE_NO_WARNINGS
+
+#include <vector>
 #include <iostream>
 #include <string>
 #include <cstdint>
 #include <fstream>
 #include <sstream>
-//#include <unistd.h>
-//#include <sys/socket.h>
-#include <cstdint>
+#include <unistd.h>
+#include <sys/socket.h>
 #include <cstdio>
 using namespace std;
 
@@ -125,16 +126,39 @@ public:
     // Implement these functions
     Timeline()
     {
+        head = nullptr;
+        tail = nullptr;
+        stepCount = 0;
     }
     void record(Snapshot* s)
     {
+          TimelineNode* temp = new TimelineNode;
+
+    temp->data = s;
+    temp->next = nullptr;
+    temp->prev = tail;
+
+    if (stepCount == 0)
+    {
+        head = temp;
+        tail = temp;
+    }
+    else
+    {
+        tail->next = temp;
+        tail = temp;
+    }
+
+    stepCount++;
         // add record in the timeline
     }
     TimelineNode* begin()
     {
+        return head;
     }
     int32_t getStepCount()
     {
+        return stepCount;
     }
 };
 
@@ -170,6 +194,8 @@ void writeHeader(FILE* f, const TTDBHeader& h)
     fwrite(h.magic, 1, 4, f);
     fwrite(&h.version, sizeof(int32_t), 1, f);
 
+    fwrite(&h.stepCount, sizeof(int32_t), 1, f);
+    fwrite(&h.indexOffset, sizeof(int64_t), 1, f);
     // placeholder for other two data members
 }
 
@@ -232,7 +258,7 @@ bool validateProgram(const char* sourcePath)
         if (firstWord(out) == "func") {
             count++;
         }
-        if (out == "func_end") {
+        if (firstWord(out) == "func_end") {
             count--;
         }
       
@@ -397,7 +423,7 @@ int32_t tokenizeLine(const string& line, Token tokens[], int32_t maxTokens)
         if (size == 0) {
             tokens[size].type = KEYWORD;
         }
-        if (size == 1) {
+        else if (size == 1) {
 
             tokens[size].type = IDENTIFIER;
         }
@@ -604,9 +630,114 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
             callstack.push(topframe);
         }
 
+        if (keyword == "call") {
+
+            fseek(f, offset, SEEK_SET);
+
+            int64_t funcoffset;
+
+            fread(&funcoffset, sizeof(int64_t), 1, f);
+
+            Frame callerframe = callstack.pop();
+
+
+            int64_t return_offset = offset + 8 + 4 + line.size();
+
+
+            Frame temp;
+            temp.func_name = Tokens[1].text;
+
+            temp.argc = size - 2;
+
+            temp.localCount = 0;
+
+            temp.returnLine = return_offset;
+
+
+            for (int i = 2; i < size && i - 2 < MAX_VARS_PER_FRAME; i++) {
+
+                temp.argv[i - 2].name = Tokens[i].text;
+
+                for (int j = 0; j < callerframe.localCount; j++) {
+
+                    if (callerframe.locals[j].name == temp.argv[i - 2].name) {
+
+                        temp.argv[i - 2].value = callerframe.locals[j].value;
+                        break;
+                    }
+
+                }
+
+
+            }
+
+            callstack.push(callerframe);
+            callstack.push(temp);
+
+            offset =funcoffset;
+
+            Snapshot* s =buildSnapshot(callstack);
+            
+            timeline.record(s);
+
+            continue;
+        }
+        if (keyword == "func") {
+
+            Frame top = callstack.pop();
+            
+            for (int i = 2; i < size && (i - 2) < top.argc; i++) {
+
+                
+          
+
+                top.locals[top.localCount].name = Tokens[i].text;;
+
+                top.locals[top.localCount].value = top.argv[i - 2].value;
+
+                top.localCount++;
+            }
+            callstack.push(top);
+        }
+
+        if (keyword == "func_end") {
+
+            Frame last = callstack.pop();
+
+            if (callstack.isEmpty()) {
+
+                Snapshot* s = buildSnapshot(callstack);
+
+                timeline.record(s);
+
+                break;
+
+            }
+
+            Frame caller = callstack.peek();
+
+            Snapshot* s = buildSnapshot(callstack);
+            timeline.record(s);
+            offset = last.returnLine;
+            continue;
+
+
+        }
+
+
+        int64_t next_offset =  ftell(f);
+
+        offset = next_offset;
+
+     
+
+        Snapshot* s = buildSnapshot(callstack);
+
+        timeline.record(s);
 
     }
 
+    fclose(f);
     // initialize the call stack
     // make the main frame
     // push main frame on the call stack
@@ -618,6 +749,42 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
 // PASS 0x3: SERIALIZE TIMELINE
 void writeTdbg(Timeline& timeline, const char* tdbgPath)
 {
+
+
+    FILE* f = fopen(tdbgPath, "wb");
+    if (!f) {
+
+        return;
+    }
+
+    int32_t step_count = timeline.getStepCount();
+
+
+
+    int64_t index_offset = sizeof(TTDBHeader) + ((int64_t)step_count * sizeof(Snapshot));
+
+    TTDBHeader header = { {'T', 'T', 'D', 'B'}, 1, step_count, index_offset };
+
+
+    writeHeader(f, header);
+
+    int64_t* index_array = new int64_t[step_count];
+
+    TimelineNode* current = timeline.begin();
+
+    for (int32_t i = 0; i < step_count && current != nullptr; i++) {
+        index_array[i] = ftell(f);
+
+        fwrite(current->data, sizeof(Snapshot), 1, f);
+
+        current = current->next;
+    }
+
+    fwrite(index_array, sizeof(int64_t), step_count, f);
+
+    delete[] index_array;
+    fclose(f);
+
     // placeholder for header
     // index array of the size of stepcount from the timeline
     // placing each snapshot in the file while maintaining the index(starting point of each nth snapshot)
@@ -634,15 +801,16 @@ int32_t main()
         // send an error response instead of a .tdbg file
         return 1;
     }
-    cout << "Done";
+  
    
     int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
-    cout << "done2" << endl;
-    /*
+    
+   
     Timeline timeline;
     executeProgram("resolve.bin", mainOffset, timeline);
-
+   
     writeTdbg(timeline, "session.tdbg");
-    */
+    
+    cout << "No Error" << endl;
     return 0;
 }

@@ -5,3 +5,5 @@ Time Travel Debugger
 2)4-oct -> completed stage 2
 3) tomorrow-> i will try to complete stage 3
 4) 75% of stage 3 has been completed
+5)Stage 3 complete
+6) stage 4 complete-- tested my code on g++ compiler 
