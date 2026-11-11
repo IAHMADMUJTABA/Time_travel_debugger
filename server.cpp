@@ -17,6 +17,9 @@
 #include <sstream>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <netinet/in.h> 
+#include <arpa/inet.h>  
+#include "helper.h"     
 #include <cstdio>
 using namespace std;
 
@@ -200,16 +203,6 @@ void writeHeader(FILE* f, const TTDBHeader& h)
 }
 
 // resolve.bin - bookkeeping
-struct FuncEntry
-{
-    string funcName;
-    int64_t byteOffsetInResolveBin; // where this function's FUNC header record sits
-};
-struct PendingPatch
-{
-    int64_t byteOffsetOfOffsetField; // where in resolve.bin to seek back and overwrite
-    string targetFuncName;
-};
 
 
 
@@ -792,25 +785,138 @@ void writeTdbg(Timeline& timeline, const char* tdbgPath)
     // update the header
 }
 // main section
-int32_t main()
+int32_t main(int argc, char* argv[])
 {
 
-    if (!validateProgram("source.bin"))
-    {
-        cout << "error";
-        // send an error response instead of a .tdbg file
+    if (argc < 2) {
+        cout << "usage: ./server <port>" << endl;
         return 1;
     }
-  
-   
-    int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
+    int port = stoi(argv[1]);
+
+    int main_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (main_socket < 0) {
+        return 1;
+    }
+
+    int yes = 1;
+
+    setsockopt(main_socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    sockaddr_in address{};
+
+    address.sin_family = AF_INET;
+
+    address.sin_addr.s_addr = INADDR_ANY;
+
+    address.sin_port = htons(port);
+
+    if (bind(main_socket, (struct sockaddr*)&address, sizeof(address)) < 0) {
+        return 1;
+    }
+
+    listen(main_socket, 1);
+
+    int connection = accept(main_socket, nullptr, nullptr);
+    if (connection < 0) return 1;
+
+    close(main_socket);
+
+    FILE* file_out = fopen("source.bin", "wb");
+
+
+    if (!file_out) {
+
+
+        close(connection);
+
+        return 1;
+    }
+
+    char data_buffer[IO_BUFFER_SIZE];
+
+    ssize_t bytes_read;
+
+    while ((bytes_read = recv(connection, data_buffer, sizeof(data_buffer), 0)) > 0) {
+
+        fwrite(data_buffer, 1, bytes_read, file_out);
+
+    }
+
+    fclose(file_out);
+
+    bool has_error = false;
+
+    string error_msg = "";
+
+    if (!validateProgram("source.bin")) {
+
+        has_error = true;
+
+        error_msg = "syntax error ";
+    }
+
+    if (!has_error) {
+
+        int64_t start_point = resolveProgram("source.bin", "resolve.bin");
+
+        if (start_point == -1) {
+
+            has_error = true;
+
+            error_msg = "main function not found.";
+        }
+        else {
+            Timeline timeline;
+
+            executeProgram("resolve.bin", start_point, timeline);
+
+            writeTdbg(timeline, "session.tdbg");
+        }
+    }
+
+    vector<char> reply_data;
+
+    if (has_error) {
+
+        reply_data.push_back(1);
+
+        for (char c : error_msg) {
+
+            reply_data.push_back(c);
+        }
+    }
+    else {
+        reply_data.push_back(0);
+
+        FILE* result_file = fopen("session.tdbg", "rb");
+
+        if (result_file) {
+            fseek(result_file, 0, SEEK_END);
+
+            long fileSize = ftell(result_file);
+
+            fseek(result_file, 0, SEEK_SET);
+
+            size_t old_size = reply_data.size();
+
+            reply_data.resize(old_size + fileSize);
+
+            fread(reply_data.data() + old_size, 1, fileSize, result_file);
+
+
+            fclose(result_file);
+        }
+    }
+
+    uint32_t checksum = compute_crc(reply_data.data(), reply_data.size());
+
+    send_all(connection, reply_data.data(), reply_data.size());
+
+    send_all(connection, (const char*)&checksum, sizeof(checksum));
+
+    close(connection);
     
-   
-    Timeline timeline;
-    executeProgram("resolve.bin", mainOffset, timeline);
-   
-    writeTdbg(timeline, "session.tdbg");
-    
-    cout << "No Error" << endl;
     return 0;
 }
